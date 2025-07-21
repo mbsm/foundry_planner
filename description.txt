@@ -1,0 +1,74 @@
+1. Problem Description
+    The goal is to develop a Foundry Production Planner Engine to efficiently schedule metal-casting orders 
+    using one of these two strategies:
+
+    ASAP (As Soon As Possible): Starts production as soon as resources become available.
+    JIT (Just-In-Time): Starts production at the latest possible date considering a 
+    safety days buffer before the due date.
+
+    Order Types
+
+    A. Recurrent Orders
+
+    Follow a standard process:
+    Molding:
+        Create molds using one flask of one size (defined in the order) per mold. 
+        Molding is alloy-specific and done only on business days.
+        Daily mold limits, flask availability per size, and per-part mold caps apply.
+
+    Staging:
+        Molds rest in staging for 1 calendar day after molding.
+        there can be more than max_staging molds in staging at the same time.
+
+    Pouring:
+        Only on business days.
+        max tonnage per day must be respected.
+
+    Shakeout:
+        Cooling period in calendar days (specified per order).
+        Shakeout on the next business day returns flasks so they can be reused in molding.
+
+    Finishing:
+        Starts after shakeout, business days only.
+        May reduce duration to minimum to meet due dates.
+
+    B. New Orders
+
+    Include all recurrent steps plus this ones before molding:
+
+    Pattern Manufacturing:
+        each order defines the pattern manufacturing time in business days.
+        the number of patterns been manufactured in one day is limited by the max_manufacturing_patterns
+
+    Production Sample:
+        the order define how many molds are needed for the production sample.
+        the sample is a small recurrent order that must be completed before the main order can start.
+        The sample order follows the same process as recurrent orders but with a reduced number of molds.
+        The sample order is scheduled before the main order and must be completed before the main order starts.
+        for samples finishing time is always the minimum defined in the order.
+        the sample order uses resources just like a recurrent order and must be scheduled accordingly.
+
+2. currently the planification is made by a human planner, the goal is to automate this process.
+the human planner uses the following procedure to create the plan:
+    a) sort the orders by the numbers of days remaining to the last possible start date (due date - estimated production time).
+    b) for each order, check if the order is recurrent or new.
+    c) for asap orders, start scheduling form today:
+        i) schedule de order at start = today, if it meets all the requirements keep it
+        ii) if it does not meet the requirements, try to schedule it at the next available date for a max number of exploring days
+        iii) if the order cannot be scheduled, mark it as unscheduled and continue with the next order.
+        iv) if the order can be schedulled but is completed after the due date, mark it as delayed, otherwise mark it as on time.
+    d) for jit orders, start scheduling from the due date - estimated production time - safety_days:
+        i) schedule the order at start = due date - estimated production time - safety_days
+        ii) if it meets all the requirements keep it, if not try to schedule it at the previous available date until today
+        iii) if the order cannot be scheduled, schedulle it with the asap strategy.
+
+
+
+3. Planner Output Structure
+a dictionary with orders as keys. value is also a dictionary with process_steps as keys and a list of tuples (date, ##)
+
+for molding ## is the number of molds planned of the order for that date.
+for staging ## is the number of molds staged of the order for that date.
+for pouring ## is the tons of steel poured of the order for that date.
+for shakeout ## is the number of molds shaken out of the order for that date.
+for finishing # is the number of castings finished of the order for that date.

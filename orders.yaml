@@ -1,0 +1,82 @@
+# List of production orders for the foundry production planner
+- order_id: Job-1
+  part_number: PN-001
+  product_family: Parrilla
+  quantity: 32
+  part_weight: 2.4
+  parts_per_mold: 1
+  flask_size: F120
+  due_date: 2025-09-15
+  order_type: recurrent
+  alloy: CM3
+  cooling_days: 4
+  finishing_time:
+    nominal: 35
+    minimum: 16
+  strategy: ASAP
+
+- order_id: Job-2
+  part_number: PN-002
+  product_family: Lifter
+  quantity: 24
+  part_weight: 3.2
+  parts_per_mold: 1
+  flask_size: F143
+  due_date: 2025-09-25
+  order_type: recurrent
+  alloy: CM1
+  cooling_days: 4
+  finishing_time:
+    nominal: 35
+    minimum: 16
+  strategy: JIT
+
+- order_id: Job-3
+  part_number: PN-003
+  product_family: Lifter
+  quantity: 36
+  part_weight: 6.5
+  parts_per_mold: 1
+  flask_size: F143
+  due_date: 2025-09-20
+  order_type: recurrent
+  alloy: CM4
+  cooling_days: 5
+  finishing_time:
+    nominal: 35
+    minimum: 16
+  strategy: JIT
+
+- order_id: Job-4
+  part_number: PN-002
+  product_family: Coraza
+  quantity: 72
+  part_weight: 1.1
+  parts_per_mold: 2
+  flask_size: F143
+  due_date: 2025-08-20
+  order_type: recurrent
+  alloy: CM1
+  cooling_days: 3
+  finishing_time:
+    nominal: 35
+    minimum: 16
+  strategy: JIT
+
+- order_id: Job-5
+  part_number: PN-005
+  product_family: Parrilla
+  quantity: 24
+  part_weight: 1.1
+  parts_per_mold: 2
+  flask_size: F143
+  due_date: 2025-08-20
+  order_type: new
+  alloy: CM2
+  cooling_days: 3
+  finishing_time:
+    nominal: 35
+    minimum: 16
+  strategy: JIT
+  pattern_time: 35
+  molds_to_sample: 5
