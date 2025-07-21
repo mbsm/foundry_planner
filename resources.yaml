@@ -1,0 +1,11 @@
+flask_limits:
+  F105: 100
+  F120: 100
+  F143: 45
+
+max_patterns_per_day: 8
+max_molds_per_day: 30
+max_same_part_molds_per_day: 10
+max_pouring_tons_per_day: 120.0
+max_staging_molds: 80
+

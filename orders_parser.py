@@ -1,6 +1,6 @@
 from math import ceil
 from enum import Enum
-from datetime import datetime
+from datetime import datetime, date
 import yaml
 
 class OrderState(Enum):
@@ -61,17 +61,14 @@ class Order:
         self.status = OrderStatus.UNSCHEDULED
         self.alloy = None
         self.total_molds = 0
-
         self.produced_molds = 0
         self.scraped_molds = 0
 
-    # Calendar day production time estimation
-    def estimated_production_days(self, max_molds_per_day): 
+    def compute_estimated_duration(self, max_molds_per_day):
         total_molds = ceil(self.parts_total / self.parts_per_mold)
         remaining_molds = total_molds - self.produced_molds - self.scraped_molds
         molding_days = ceil(remaining_molds / max_molds_per_day)
-        molding_days += (molding_days // 5) * 2  # weekend approximation
-
+        molding_days += (molding_days // 5) * 2  # approx weekend overhead
         return molding_days + self.cooling_days + self.finishing_days_nominal
 
 def parse_orders(file_path):
@@ -86,7 +83,16 @@ def parse_orders(file_path):
         order.parts_per_mold = raw["parts_per_mold"]
         order.part_weight_ton = raw["part_weight"]
         order.flask_size = FlaskSize(raw["flask_size"])
-        order.due_date = raw["due_date"]
+
+        # Safe due_date parsing
+        due_raw = raw["due_date"]
+        if isinstance(due_raw, str):
+            order.due_date = datetime.strptime(due_raw, "%Y-%m-%d").date()
+        elif isinstance(due_raw, date):
+            order.due_date = due_raw
+        else:
+            raise ValueError(f"Invalid due date format: {due_raw}")
+
         order.is_new = raw["order_type"] == "new"
         order.cooling_days = raw["cooling_days"]
         order.strategy = Strategy(raw["strategy"])
@@ -105,6 +111,7 @@ def parse_orders(file_path):
 
     return orders
 
+
 # Example usage:
 
 def main():
@@ -112,7 +119,7 @@ def main():
     max_molds_per_day = 5  # Example value, adjust as needed
     for order in orders:
         print(f"Order ID: {order.order_id}, Due Date: {order.due_date}, Total Molds: {order.total_molds}")
-        print(f"  Estimated Production Days (Max {max_molds_per_day} molds/day): {order.estimated_production_days(max_molds_per_day)}")
+        print(f"  Estimated Production Days (Max {max_molds_per_day} molds/day): {order.compute_estimated_duration(max_molds_per_day)}")
 
 if __name__ == "__main__":
    main()
