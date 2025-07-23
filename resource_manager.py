@@ -36,7 +36,7 @@ class ResourceManager:
         self.staging_area = defaultdict(int)
         self.same_part_molds = defaultdict(lambda: defaultdict(int))
 
-    # Since we have JIT orders, we need to check the entire range because we can commit flasks for a ASAP order and invalidate a previous JIT order
+    
     def can_allocate_flask(self, start_day, end_day, flask_size, quantity):
         current = start_day
         while current <= end_day:
@@ -82,3 +82,15 @@ class ResourceManager:
 
     def reserve_same_part(self, day, part_number, quantity):
         self.same_part_molds[day][part_number] += quantity
+
+    def compute_available_molds(self, order, mold_day, pouring_day, molds_remaining):
+        """Compute the number of molds that can be scheduled on `mold_day` based on pouring, mold, and per-part constraints."""
+        tons_per_mold = order.parts_per_mold * order.part_weight_ton
+        pouring_capacity_left = self.max_pouring_tons_per_day - self.daily_pouring[pouring_day]
+        max_by_pouring = int(pouring_capacity_left // tons_per_mold)
+        total_molds_available = self.max_molds_per_day - self.daily_molds[mold_day]
+        max_same_part_molds = self.max_same_part_molds_per_day - self.same_part_molds[mold_day][order.order_id]
+        max_flasks_available = self.flask_limits[order.flask_size] - self.flask_pool[mold_day][order.flask_size]
+
+        return min(total_molds_available, max_same_part_molds, max_by_pouring, max_flasks_available, molds_remaining)
+

@@ -3,127 +3,126 @@ from collections import defaultdict
 from prettytable import PrettyTable
 
 def print_weekly_report(full_plan: dict, orders: list, pouring_limit_per_day: float, mold_limit_per_day: int, flask_limits: dict):
-    # Step 1: Generate weekly buckets
-    all_dates = set()
-    for plan in full_plan.values():
-        for entries in plan["schedule"].values():
-            for date_str, _ in entries:
-                all_dates.add(datetime.strptime(date_str, "%Y-%m-%d").date())
+    # Step 1: Build week buckets
+    all_dates = {
+        datetime.strptime(d, "%Y-%m-%d").date()
+        for plan in full_plan.values()
+        for entries in plan["schedule"].values()
+        for d, _ in entries
+    }
     if not all_dates:
         print("No scheduling data found.")
         return
 
-    start_date = min(all_dates)
-    end_date = max(all_dates)
-    current = start_date - timedelta(days=start_date.weekday())
+    start = min(all_dates)
+    end = max(all_dates)
+    w = start - timedelta(days=start.weekday())
     weeks = []
-    while current <= end_date:
-        weeks.append(current)
-        current += timedelta(weeks=1)
+    while w <= end:
+        weeks.append(w)
+        w += timedelta(weeks=1)
 
-    # Step 2: Aggregate usage data
-    order_weekly_molds = defaultdict(lambda: defaultdict(int))
-    total_metal_weekly = defaultdict(float)
-    total_molds_weekly = defaultdict(int)
-    flask_usage_weekly = defaultdict(lambda: defaultdict(int))
+    # Step 2: Aggregate
+    order_due = {o.order_id: o.due_date for o in orders}
+    order_flask = {o.order_id: o.flask_size.value for o in orders}
+    delayed = {o.order_id for o in orders if full_plan[o.order_id]["status"] == "DELAYED"}
+
+    total_metal = defaultdict(float)
+    total_molds = defaultdict(int)
+    flask_use = defaultdict(lambda: defaultdict(int))
+    pattern_weeks = defaultdict(set)
+    sample_end_week = {}
     finish_week = {}
     due_week = {}
+    order_weekly = defaultdict(lambda: defaultdict(int))
 
-    order_due_map = {o.order_id: o.due_date for o in orders}
-    order_flask_map = {o.order_id: o.flask_size.value for o in orders}
-    delayed_orders = {
-        o.order_id for o in orders
-        if full_plan[o.order_id]["status"] == "DELAYED"
-    }
+    for oid, plan in full_plan.items():
+        for phase in ("pattern", "molding"):
+            for dstr, cnt in plan["schedule"].get(phase, []):
+                d = datetime.strptime(dstr, "%Y-%m-%d").date()
+                wk = max(w for w in weeks if w <= d)
+                if phase == "pattern":
+                    pattern_weeks[oid].add(wk)
+                else:
+                    order_weekly[oid][wk] += cnt
+                    total_molds[wk] += cnt
+                    flask_use[order_flask[oid]][wk] += cnt
 
-    for order_id, plan in full_plan.items():
-        flask_type = order_flask_map[order_id]
-
-        for date_str, molds in plan["schedule"].get("molding", []):
-            d = datetime.strptime(date_str, "%Y-%m-%d").date()
+        for dstr, tons in plan["schedule"].get("pouring", []):
+            d = datetime.strptime(dstr, "%Y-%m-%d").date()
             wk = max(w for w in weeks if w <= d)
-            order_weekly_molds[order_id][wk] += molds
-            total_molds_weekly[wk] += molds
-            flask_usage_weekly[flask_type][wk] += molds
+            total_metal[wk] += tons
 
-        for date_str, tons in plan["schedule"].get("pouring", []):
-            d = datetime.strptime(date_str, "%Y-%m-%d").date()
-            wk = max(w for w in weeks if w <= d)
-            total_metal_weekly[wk] += tons
+        # sample_end entries only exist for new orders
+        for dstr, _ in plan["schedule"].get("sample_end", []):
+            d = datetime.strptime(dstr, "%Y-%m-%d").date()
+            sample_end_week[oid] = max(w for w in weeks if w <= d)
 
+        # overall finish
         if plan["end_date"]:
-            end_d = datetime.strptime(plan["end_date"], "%Y-%m-%d").date()
-            finish_week[order_id] = max(w for w in weeks if w <= end_d)
+            d = datetime.strptime(plan["end_date"], "%Y-%m-%d").date()
+            finish_week[oid] = max(w for w in weeks if w <= d)
 
-        due_d = order_due_map.get(order_id)
-        if due_d:
-            due_week[order_id] = max(w for w in weeks if w <= due_d)
+        # due date week
+        dd = order_due.get(oid)
+        if dd:
+            due_week[oid] = max(w for w in weeks if w <= dd)
 
-    def business_days_in_week(start: datetime.date):
-        return sum(1 for i in range(7) if (start + timedelta(days=i)).weekday() < 5)
+    # Step 3: Table setup
+    labels = [wk.strftime("%b-%d") for wk in weeks]
+    tbl = PrettyTable()
+    tbl.field_names = ["Order ID"] + labels
 
-    max_metal_per_week = {wk: pouring_limit_per_day * business_days_in_week(wk) for wk in weeks}
-    max_molds_per_week = {wk: mold_limit_per_day * business_days_in_week(wk) for wk in weeks}
-    max_flask_per_week = {
-        size: {wk: flask_limits[size] * business_days_in_week(wk) for wk in weeks}
+    # Header rows
+    header_metal = ["Metal Used / Limit"]
+    header_molds = ["Molds Used / Limit"]
+    header_flasks = {
+        size: [f"Flasks {size} / Limit ({flask_limits[size]})"]
         for size in flask_limits
     }
 
-    # Step 3: Setup table
-    week_labels = [wk.strftime("%b-%d") for wk in weeks]
-    table = PrettyTable()
-    table.field_names = ["Order ID"] + week_labels
-
-    # Header rows
-    metal_row = ["Metal Used / Limit"]
-    mold_row = ["Molds Used / Limit"]
-    flask_rows = []
-
-    for size in flask_limits:
-        flask_rows.append([f"Flasks {size} / Limit"])
-
     for wk in weeks:
-        metal_row.append(f"{total_metal_weekly.get(wk,0.0):.1f}/{max_metal_per_week[wk]:.0f}")
-        mold_row.append(f"{total_molds_weekly.get(wk,0)}/{max_molds_per_week[wk]}")
+        bd = sum(1 for i in range(7) if (wk + timedelta(days=i)).weekday() < 5)
+        header_metal.append(f"{total_metal.get(wk,0):.1f}/{pouring_limit_per_day*bd:.0f}")
+        header_molds.append(f"{total_molds.get(wk,0)}/{mold_limit_per_day*bd}")
+        for size in flask_limits:
+            used = flask_use[size].get(wk,0)
+            header_flasks[size].append(f"{used}/{flask_limits[size]}")
 
-        for i, size in enumerate(flask_limits):
-            used = flask_usage_weekly[size].get(wk, 0)
-            limit = max_flask_per_week[size][wk]
-            flask_rows[i].append(f"{used}/{limit}")
+    tbl.add_row(header_metal)
+    tbl.add_row(header_molds)
+    for row in header_flasks.values():
+        tbl.add_row(row)
 
-    table.add_row(metal_row)
-    table.add_row(mold_row)
-    for flask_row in flask_rows:
-        table.add_row(flask_row)
-
-    # ANSI red for delayed orders
-    RED = "\033[91m"
-    YELLOW = "\033[93m"
-    RESET = "\033[0m"
-
-    for order_id in full_plan:
-        is_delayed = order_id in delayed_orders
-        display_id = f"{YELLOW}{order_id}{RESET}" if is_delayed else order_id
-        row = [display_id]
-
+    # Data rows
+    for oid in full_plan:
+        disp = f"\033[93m{oid}\033[0m" if oid in delayed else oid
+        row = [disp]
         for wk in weeks:
-            molds = order_weekly_molds[order_id].get(wk, 0)
-            symbols = ""
-            if finish_week.get(order_id) == wk:
-                symbols += "+"
-            if due_week.get(order_id) == wk:
-                symbols += "▲"
-            cell = f"{molds}{symbols}" if molds or symbols else ""
+            cnt = order_weekly[oid].get(wk, 0)
+            syms = ""
+            if wk in pattern_weeks[oid]:
+                syms += "P"
+            if sample_end_week.get(oid) == wk:
+                syms += "●"
+            if finish_week.get(oid) == wk:
+                syms += "+"
+            if due_week.get(oid) == wk:
+                syms += "▲"
+            if cnt > 0:
+                cell = f"{cnt}{syms}"
+            elif syms:
+                cell = syms
+            else:
+                cell = ""
             row.append(cell)
+        tbl.add_row(row)
 
-        table.add_row(row)
-
-    # Print result
+    # Print
     print("\nWEEKLY PRODUCTION REPORT\n")
-    print(table)
-    print("\nLegend: '+' = end of production, '▲' = due date")
-    print("Format: molds per week. Red = delayed. Top rows show resource usage vs limit.\n")
-
+    print(tbl)
+    print("\nLegend: 'P'=pattern, '●'=sample end, '+'=end production, '▲'=due date")
+    print("Format: molds per week. Top rows show usage vs limit.\n")
 
 
 def print_schedule_summary(full_plan: dict, orders: list):

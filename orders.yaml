@@ -61,16 +61,16 @@
   finishing_time:
     nominal: 35
     minimum: 16
-  strategy: JIT
+  strategy: ASAP
 
 - order_id: Job-5
   part_number: PN-005
   product_family: Parrilla
   quantity: 24
   part_weight: 1.1
-  parts_per_mold: 2
+  parts_per_mold: 1
   flask_size: F143
-  due_date: 2025-08-20
+  due_date: 2025-11-5
   order_type: new
   alloy: CM2
   cooling_days: 3
@@ -78,5 +78,5 @@
     nominal: 35
     minimum: 16
   strategy: JIT
-  pattern_time: 35
+  pattern_time: 20
   molds_to_sample: 5

@@ -5,31 +5,12 @@ from orders_parser import OrderStatus
 from collections import defaultdict
 from math import ceil
 
-from collections import defaultdict
-from datetime import date
-from math import ceil
-from orders_parser import Order, Strategy, OrderStatus
-
-def plan_full_order(order, calendar, resources, max_search_days=30, safety_days=3):
-    """
-    Plan a full order, handling pattern manufacturing and sample production if it's a new order.
-    Falls back to standard plan_order() for recurrent orders.
-
-    Returns:
-        dict: {
-            "order_id": str,
-            "status": OrderStatus,
-            "start_date": date,
-            "end_date": date,
-            "schedule": {phase: [(date, quantity), ...]}
-        }
-    """
-    from planner_engine import plan_order  # avoid circular import
-
+def plan_full_order(order, calendar, resources, max_search_days=30, safety_days=3, days_after_pattern=3, days_after_sample=3):
+    # For recurrent orders, delegate to plan_order
     if not order.is_new:
-        return plan_order(order, calendar, resources, try_schedule, firm_schedule,
-                          max_search_days=max_search_days, safety_days=safety_days)
+        return plan_order(order, calendar, resources, max_search_days=max_search_days, safety_days=safety_days)
 
+    # Initialize plan structure
     plan = {
         "order_id": order.order_id,
         "status": None,
@@ -39,21 +20,18 @@ def plan_full_order(order, calendar, resources, max_search_days=30, safety_days=
     }
 
     # Step 1: Pattern Manufacturing (business days)
-    pattern_start = date.today()
-    pattern_days = 0
+    today = date.today()
     remaining = order.pattern_days
+    ptr = today
     while remaining > 0:
-        if calendar.is_business_day(pattern_start) and resources.can_schedule_pattern(pattern_start):
-            resources.reserve_pattern(pattern_start)
-            plan["schedule"]["pattern"].append((pattern_start, 1))
+        if calendar.is_business_day(ptr) and resources.can_schedule_pattern(ptr):
+            resources.reserve_pattern(ptr)
+            plan["schedule"]["pattern"].append((ptr, 1))
             remaining -= 1
-            pattern_days += 1
-        pattern_start = calendar.add_business_days(pattern_start, 1)
+        ptr = calendar.next_business_day(ptr)
+    pattern_end = plan["schedule"]["pattern"][-1][0]
 
-    pattern_end = plan["schedule"]["pattern"][-1][0] if plan["schedule"]["pattern"] else date.today()
-
-    # Step 2: Sample Order (before main)
-    sample_castings = order.sample_molds * order.parts_per_mold
+    # Step 2: Sample Order (ASAP, non-new)
     sample_order = Order(order_id=f"{order.order_id}-SAMPLE")
     sample_order.strategy = Strategy.ASAP
     sample_order.is_new = False
@@ -63,39 +41,41 @@ def plan_full_order(order, calendar, resources, max_search_days=30, safety_days=
     sample_order.cooling_days = order.cooling_days
     sample_order.finishing_days_nominal = order.finishing_days_min
     sample_order.finishing_days_min = order.finishing_days_min
-    sample_order.parts_total = sample_castings
+    sample_order.parts_total = order.sample_molds * order.parts_per_mold
     sample_order.parts_per_mold = order.parts_per_mold
     sample_order.part_weight_ton = order.part_weight_ton
     sample_order.flask_size = order.flask_size
     sample_order.alloy = order.alloy
     sample_order.total_molds = order.sample_molds
 
-    sample_start = calendar.next_business_day(pattern_end)
-    sample_plan = plan_order(sample_order, calendar, resources, try_schedule, firm_schedule,
-                             max_search_days=max_search_days, safety_days=0, start_date=sample_start)
-
+    sample_start = calendar.add_business_days(pattern_end, days_after_pattern)
+    sample_plan = plan_order(sample_order, calendar, resources, max_search_days=max_search_days, safety_days=0, start_date=sample_start)
     if sample_plan["status"] == OrderStatus.UNSCHEDULED:
         plan["status"] = OrderStatus.UNSCHEDULED
         return plan
 
-    # Step 3: Main Order (after sample finishes)
     sample_end = sample_plan["end_date"]
-    order.parts_total -= sample_castings
+    # Mark sample completion for reporting
+    plan["schedule"]["sample_end"].append((sample_end, 1))
+
+    # Step 3: Main Production (after sample finishes)
+    # Adjust remaining production
+    produced = sample_order.parts_total
+    order.parts_total -= produced
     order.total_molds = ceil(order.parts_total / order.parts_per_mold)
 
-    main_start = calendar.next_business_day(sample_end)
-    main_plan = plan_order(order, calendar, resources, try_schedule, firm_schedule,
-                           max_search_days=max_search_days, safety_days=safety_days, start_date=main_start)
-
+    main_start = calendar.add_business_days(sample_end, days_after_sample)
+    main_plan = plan_order(order, calendar, resources, max_search_days=max_search_days, safety_days=safety_days, start_date=main_start)
     if main_plan["status"] == OrderStatus.UNSCHEDULED:
         plan["status"] = OrderStatus.UNSCHEDULED
         return plan
 
-    # Merge plans
+    # Step 4: Consolidate schedule and status
     plan["status"] = max(sample_plan["status"], main_plan["status"], key=lambda s: s.value)
-    plan["start_date"] = plan["schedule"]["pattern"][0][0] if plan["schedule"]["pattern"] else sample_plan["start_date"]
+    plan["start_date"] = plan["schedule"]["pattern"][0][0]
     plan["end_date"] = max(sample_plan["end_date"], main_plan["end_date"])
 
+    # Merge sample and main phases into plan.schedule
     for phase in ["pattern", "molding", "staging", "pouring", "shakeout", "finishing"]:
         plan["schedule"][phase].extend(sample_plan["schedule"].get(phase, []))
         plan["schedule"][phase].extend(main_plan["schedule"].get(phase, []))
@@ -103,10 +83,7 @@ def plan_full_order(order, calendar, resources, max_search_days=30, safety_days=
     return plan
 
 
-
-
-def plan_order(order, calendar, resources, try_schedule, firm_schedule,
-               max_search_days=30, safety_days=3, start_date=None):
+def plan_order(order, calendar, resources, max_search_days=30, safety_days=3, start_date=None):
     """
     Plan a single order using the specified strategy (ASAP or JIT).
     
@@ -182,9 +159,11 @@ def plan_order(order, calendar, resources, try_schedule, firm_schedule,
         "schedule": {}
     }
 
-
-
 def try_schedule(order, start_date, calendar, resources):
+    """
+    Simulates full production scheduling of an order starting at `start_date`.
+    Returns True if all constraints (including flask/pouring/staging) are met.
+    """
     molds_remaining = order.total_molds
     mold_day = start_date
     daily_plan = []
@@ -194,42 +173,21 @@ def try_schedule(order, start_date, calendar, resources):
             mold_day = calendar.add_business_days(mold_day, 1)
             continue
 
+        # Determine dependent days
         staging_day = calendar.add_calendar_days(mold_day, 1)
         pouring_day = calendar.next_business_day(staging_day)
         cooling_ends = calendar.add_calendar_days(pouring_day, order.cooling_days)
         shakeout_day = calendar.next_business_day(cooling_ends)
         flask_release_day = calendar.next_business_day(shakeout_day)
 
-        # Pouring constraint
-        tons_per_mold = order.parts_per_mold * order.part_weight_ton
-        pouring_capacity_left = resources.max_pouring_tons_per_day - resources.daily_pouring[pouring_day]
-        max_molds_by_pouring = int(pouring_capacity_left // tons_per_mold)
-
-        # Flask availability over full window
-        flask_limit = resources.flask_limits[order.flask_size]
-        flasks_in_use = sum(
-            resources.flask_pool[day][order.flask_size]
-            for day in [mold_day + timedelta(days=i) for i in range((flask_release_day - mold_day).days + 1)]
-        )
-        available_flasks = max(0, flask_limit - flasks_in_use)
-
-        # Determine maximum molds possible today
-        available_today = min(
-            resources.max_molds_per_day - resources.daily_molds[mold_day],
-            resources.max_same_part_molds_per_day - resources.same_part_molds[mold_day][order.order_id],
-            max_molds_by_pouring,
-            molds_remaining,
-            available_flasks
-        )
+        # Compute how many molds can be made this day based on mold/pouring/part limits
+        available_today = resources.compute_available_molds(order, mold_day, pouring_day, molds_remaining)
 
         if available_today <= 0:
             mold_day = calendar.add_business_days(mold_day, 1)
             continue
 
-        if not resources.can_stage_molds(staging_day, available_today):
-            mold_day = calendar.add_business_days(mold_day, 1)
-            continue
-
+        # All constraints passed, tentatively accept
         daily_plan.append((mold_day, available_today))
         molds_remaining -= available_today
         mold_day = calendar.add_business_days(mold_day, 1)
@@ -237,7 +195,7 @@ def try_schedule(order, start_date, calendar, resources):
     if molds_remaining > 0:
         return False
 
-    # Finishing check
+    # Final check: finishing must fit in due date
     last_mold_day = daily_plan[-1][0]
     staging_day = calendar.add_calendar_days(last_mold_day, 1)
     pouring_day = calendar.next_business_day(staging_day)
@@ -245,18 +203,23 @@ def try_schedule(order, start_date, calendar, resources):
     shakeout_day = calendar.next_business_day(cooling_ends)
     finishing_start = calendar.next_business_day(shakeout_day)
 
+    # Try to fit finishing within allowed window
     for days in range(order.finishing_days_nominal, order.finishing_days_min - 1, -1):
         finishing_end = calendar.add_business_days(finishing_start, days)
         if finishing_end <= order.due_date:
             return True
 
+    # Even minimum duration is late → still feasible, just delayed
     return True
 
 
-
-
+from collections import defaultdict
 
 def firm_schedule(order, start_date, calendar, resources):
+    """
+    Commit a feasible schedule for an order starting on `start_date`.
+    Reserves resources and returns a full schedule dictionary + end date.
+    """
     schedule = defaultdict(list)
     molds_remaining = order.total_molds
     mold_day = start_date
@@ -267,40 +230,28 @@ def firm_schedule(order, start_date, calendar, resources):
             mold_day = calendar.add_business_days(mold_day, 1)
             continue
 
+        # Calculate dependent steps
         staging_day = calendar.add_calendar_days(mold_day, 1)
         pouring_day = calendar.next_business_day(staging_day)
         cooling_ends = calendar.add_calendar_days(pouring_day, order.cooling_days)
         shakeout_day = calendar.next_business_day(cooling_ends)
         flask_release_day = calendar.next_business_day(shakeout_day)
 
-        pouring_capacity_left = resources.max_pouring_tons_per_day - resources.daily_pouring[pouring_day]
-        max_molds_by_pouring = int(pouring_capacity_left // tons_per_mold)
-
-        flask_limit = resources.flask_limits[order.flask_size]
-        flasks_in_use = sum(
-            resources.flask_pool[day][order.flask_size]
-            for day in [mold_day + timedelta(days=i) for i in range((flask_release_day - mold_day).days + 1)]
-        )
-        available_flasks = max(0, flask_limit - flasks_in_use)
-
-        available_today = min(
-            resources.max_molds_per_day - resources.daily_molds[mold_day],
-            resources.max_same_part_molds_per_day - resources.same_part_molds[mold_day][order.order_id],
-            max_molds_by_pouring,
-            molds_remaining,
-            available_flasks
-        )
+        # Determine how many molds can be done today
+        available_today = resources.compute_available_molds(order, mold_day, pouring_day, molds_remaining)
 
         if available_today <= 0:
             mold_day = calendar.add_business_days(mold_day, 1)
             continue
 
+        # Reserve all resources
         resources.reserve_molds(mold_day, available_today)
         resources.reserve_same_part(mold_day, order.order_id, available_today)
         resources.reserve_flask(mold_day, flask_release_day, order.flask_size, available_today)
         resources.reserve_staging(staging_day, available_today)
         resources.reserve_pouring(pouring_day, available_today * tons_per_mold)
 
+        # Append to schedule
         schedule["molding"].append((mold_day, available_today))
         schedule["staging"].append((staging_day, available_today))
         schedule["pouring"].append((pouring_day, round(available_today * tons_per_mold, 3)))
@@ -309,6 +260,7 @@ def firm_schedule(order, start_date, calendar, resources):
         molds_remaining -= available_today
         mold_day = calendar.add_business_days(mold_day, 1)
 
+    # Final stages after shakeout
     last_mold_day = schedule["molding"][-1][0]
     staging_day = calendar.add_calendar_days(last_mold_day, 1)
     pouring_day = calendar.next_business_day(staging_day)
@@ -316,6 +268,7 @@ def firm_schedule(order, start_date, calendar, resources):
     shakeout_day = calendar.next_business_day(cooling_ends)
     finishing_start = calendar.next_business_day(shakeout_day)
 
+    # Determine finishing window (favor nominal if possible)
     for days in range(order.finishing_days_nominal, order.finishing_days_min - 1, -1):
         finishing_end = calendar.add_business_days(finishing_start, days)
         if finishing_end <= order.due_date:
@@ -324,6 +277,7 @@ def firm_schedule(order, start_date, calendar, resources):
         days = order.finishing_days_min
         finishing_end = calendar.add_business_days(finishing_start, days)
 
+    # Distribute parts over the finishing window
     total_parts = order.parts_total
     parts_remaining = total_parts
     current_day = finishing_start
@@ -338,3 +292,5 @@ def firm_schedule(order, start_date, calendar, resources):
         current_day = calendar.add_business_days(current_day, 1)
 
     return schedule, finishing_end
+
+
