@@ -1,5 +1,6 @@
 from collections import defaultdict
 from datetime import date, timedelta
+from math import floor
 import yaml
 
 from orders_parser import FlaskSize  # adjust import to match your module layout
@@ -83,14 +84,26 @@ class ResourceManager:
     def reserve_same_part(self, day, part_number, quantity):
         self.same_part_molds[day][part_number] += quantity
 
-    def compute_available_molds(self, order, mold_day, pouring_day, molds_remaining):
-        """Compute the number of molds that can be scheduled on `mold_day` based on pouring, mold, and per-part constraints."""
-        tons_per_mold = order.parts_per_mold * order.part_weight_ton
-        pouring_capacity_left = self.max_pouring_tons_per_day - self.daily_pouring[pouring_day]
-        max_by_pouring = int(pouring_capacity_left // tons_per_mold)
+    def compute_available_molds(self, order, mold_day, pouring_day):
+        """Compute the number of molds that can be scheduled on `mold_day` mold, and per-part constraints."""
         total_molds_available = self.max_molds_per_day - self.daily_molds[mold_day]
         max_same_part_molds = self.max_same_part_molds_per_day - self.same_part_molds[mold_day][order.order_id]
-        max_flasks_available = self.flask_limits[order.flask_size] - self.flask_pool[mold_day][order.flask_size]
+        return min(total_molds_available, max_same_part_molds)
 
-        return min(total_molds_available, max_same_part_molds, max_by_pouring, max_flasks_available, molds_remaining)
-
+    def compute_available_pouring(self, order, pouring_day):
+        """Compute the available pouring capacity in molds for a given order on `pouring_day`."""
+        tons_per_mold = order.parts_per_mold * order.part_weight_ton
+        pouring_capacity_left = self.max_pouring_tons_per_day - self.daily_pouring[pouring_day]
+        return floor(pouring_capacity_left /tons_per_mold)
+    
+    def compute_available_flasks(self, order, start_day, end_day):
+        """Compute the available flasks for an order over a range of days
+           the available flasks are the minimum of the daily limits for the rage
+        """
+        min_flasks = float('inf')
+        current = start_day
+        while current <= end_day:
+            limit = self.flask_limits.get(order.flask_size, 0)
+            min_flasks = min(min_flasks, limit - self.flask_pool[current][order.flask_size])
+            current += timedelta(days=1)
+        return min_flasks

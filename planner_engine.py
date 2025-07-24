@@ -181,7 +181,10 @@ def try_schedule(order, start_date, calendar, resources):
         flask_release_day = calendar.next_business_day(shakeout_day)
 
         # Compute how many molds can be made this day based on mold/pouring/part limits
-        available_today = resources.compute_available_molds(order, mold_day, pouring_day, molds_remaining)
+        max_molds_today = resources.compute_available_molds(order, mold_day, pouring_day)
+        max_molds_pouring = resources.compute_available_pouring(order, pouring_day)
+        max_molds_flasks = resources.compute_available_flasks(order, flask_release_day, flask_release_day)
+        available_today = min(max_molds_today, max_molds_pouring, max_molds_flasks, molds_remaining)
 
         if available_today <= 0:
             mold_day = calendar.add_business_days(mold_day, 1)
@@ -237,8 +240,11 @@ def firm_schedule(order, start_date, calendar, resources):
         shakeout_day = calendar.next_business_day(cooling_ends)
         flask_release_day = calendar.next_business_day(shakeout_day)
 
-        # Determine how many molds can be done today
-        available_today = resources.compute_available_molds(order, mold_day, pouring_day, molds_remaining)
+        # Compute how many molds can be made this day based on mold/pouring/part limits
+        max_molds_today = resources.compute_available_molds(order, mold_day, pouring_day)
+        max_molds_pouring = resources.compute_available_pouring(order, pouring_day)
+        max_molds_flasks = resources.compute_available_flasks(order, flask_release_day, flask_release_day)
+        available_today = min(max_molds_today, max_molds_pouring, max_molds_flasks, molds_remaining)
 
         if available_today <= 0:
             mold_day = calendar.add_business_days(mold_day, 1)
