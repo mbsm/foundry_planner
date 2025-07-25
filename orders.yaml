@@ -6,7 +6,7 @@
   part_weight: 2.4
   parts_per_mold: 1
   flask_size: F120
-  due_date: 2025-09-15
+  due_date: 2025-12-15
   order_type: recurrent
   alloy: CM3
   cooling_days: 4
@@ -29,7 +29,7 @@
   finishing_time:
     nominal: 35
     minimum: 16
-  strategy: JIT
+  strategy: ASAP
 
 - order_id: Job-3
   part_number: PN-003
@@ -45,7 +45,7 @@
   finishing_time:
     nominal: 35
     minimum: 16
-  strategy: JIT
+  strategy: ASAP
 
 - order_id: Job-4
   part_number: PN-002
@@ -77,6 +77,6 @@
   finishing_time:
     nominal: 35
     minimum: 16
-  strategy: JIT
+  strategy: ASAP
   pattern_time: 20
   molds_to_sample: 5

@@ -30,12 +30,12 @@ class ResourceManager:
         self.max_staging_molds = staging_limit
         self.max_same_part_molds_per_day = max_same_part_molds
 
-        self.flask_pool = defaultdict(lambda: defaultdict(int))
-        self.daily_molds = defaultdict(int)
-        self.daily_pouring = defaultdict(float)
-        self.pattern_slots = defaultdict(int)
-        self.staging_area = defaultdict(int)
-        self.same_part_molds = defaultdict(lambda: defaultdict(int))
+        self.flask_pool = defaultdict(lambda: defaultdict(int)) # daily usage per flask size
+        self.daily_molds = defaultdict(int) # daily molds scheduled
+        self.daily_pouring = defaultdict(float) # daily pouring tons scheduled
+        self.pattern_slots = defaultdict(int) # daily pattern slots used
+        self.staging_area = defaultdict(int) # daily staging area usage
+        self.same_part_molds = defaultdict(lambda: defaultdict(int)) # daily same part molds usage
 
     
     def can_allocate_flask(self, start_day, end_day, flask_size, quantity):
@@ -106,4 +106,5 @@ class ResourceManager:
             limit = self.flask_limits.get(order.flask_size, 0)
             min_flasks = min(min_flasks, limit - self.flask_pool[current][order.flask_size])
             current += timedelta(days=1)
-        return min_flasks
+
+        return max(0, min_flasks)

@@ -2,14 +2,9 @@ from datetime import datetime, timedelta
 from collections import defaultdict
 from prettytable import PrettyTable
 
-def print_weekly_report(full_plan: dict, orders: list, pouring_limit_per_day: float, mold_limit_per_day: int, flask_limits: dict):
-    # Step 1: Build week buckets
-    all_dates = {
-        datetime.strptime(d, "%Y-%m-%d").date()
-        for plan in full_plan.values()
-        for entries in plan["schedule"].values()
-        for d, _ in entries
-    }
+def print_weekly_report(full_plan: dict, orders: list, resources):
+    # Step 1: Build week buckets from ResourceManager usage
+    all_dates = set(resources.flask_pool.keys())
     if not all_dates:
         print("No scheduling data found.")
         return
@@ -22,14 +17,9 @@ def print_weekly_report(full_plan: dict, orders: list, pouring_limit_per_day: fl
         weeks.append(w)
         w += timedelta(weeks=1)
 
-    # Step 2: Aggregate
+    # Step 2: Aggregate order info for display only
     order_due = {o.order_id: o.due_date for o in orders}
-    order_flask = {o.order_id: o.flask_size.value for o in orders}
     delayed = {o.order_id for o in orders if full_plan[o.order_id]["status"] == "DELAYED"}
-
-    total_metal = defaultdict(float)
-    total_molds = defaultdict(int)
-    flask_use = defaultdict(lambda: defaultdict(int))
     pattern_weeks = defaultdict(set)
     sample_end_week = {}
     finish_week = {}
@@ -45,25 +35,15 @@ def print_weekly_report(full_plan: dict, orders: list, pouring_limit_per_day: fl
                     pattern_weeks[oid].add(wk)
                 else:
                     order_weekly[oid][wk] += cnt
-                    total_molds[wk] += cnt
-                    flask_use[order_flask[oid]][wk] += cnt
 
-        for dstr, tons in plan["schedule"].get("pouring", []):
-            d = datetime.strptime(dstr, "%Y-%m-%d").date()
-            wk = max(w for w in weeks if w <= d)
-            total_metal[wk] += tons
-
-        # sample_end entries only exist for new orders
         for dstr, _ in plan["schedule"].get("sample_end", []):
             d = datetime.strptime(dstr, "%Y-%m-%d").date()
             sample_end_week[oid] = max(w for w in weeks if w <= d)
 
-        # overall finish
         if plan["end_date"]:
             d = datetime.strptime(plan["end_date"], "%Y-%m-%d").date()
             finish_week[oid] = max(w for w in weeks if w <= d)
 
-        # due date week
         dd = order_due.get(oid)
         if dd:
             due_week[oid] = max(w for w in weeks if w <= dd)
@@ -73,30 +53,48 @@ def print_weekly_report(full_plan: dict, orders: list, pouring_limit_per_day: fl
     tbl = PrettyTable()
     tbl.field_names = ["Order ID"] + labels
 
-    # Header rows
-    header_metal = ["Metal Used / Limit"]
-    header_molds = ["Molds Used / Limit"]
-    header_flasks = {
-        size: [f"Flasks {size} / Limit ({flask_limits[size]})"]
-        for size in flask_limits
-    }
-
+    # a) Metal: total consumed in week vs total available
+    header_metal = ["Metal"]
     for wk in weeks:
-        bd = sum(1 for i in range(7) if (wk + timedelta(days=i)).weekday() < 5)
-        header_metal.append(f"{total_metal.get(wk,0):.1f}/{pouring_limit_per_day*bd:.0f}")
-        header_molds.append(f"{total_molds.get(wk,0)}/{mold_limit_per_day*bd}")
-        for size in flask_limits:
-            used = flask_use[size].get(wk,0)
-            header_flasks[size].append(f"{used}/{flask_limits[size]}")
-
+        total_used = sum(resources.daily_pouring.get(wk + timedelta(days=i), 0) for i in range(7))
+        business_days = sum(1 for i in range(7) if (wk + timedelta(days=i)).weekday() < 5)
+        total_limit = resources.max_pouring_tons_per_day * business_days
+        header_metal.append(f"{total_used:.1f}/{total_limit:.1f}")
     tbl.add_row(header_metal)
+
+    # b) Molds: total produced in week vs total capacity
+    header_molds = ["Molds"]
+    for wk in weeks:
+        total_used = sum(resources.daily_molds.get(wk + timedelta(days=i), 0) for i in range(7))
+        business_days = sum(1 for i in range(7) if (wk + timedelta(days=i)).weekday() < 5)
+        total_limit = resources.max_molds_per_day * business_days
+        header_molds.append(f"{total_used}/{total_limit}")
     tbl.add_row(header_molds)
-    for row in header_flasks.values():
+
+    # c) Flasks: max in use during week vs available (per size)
+    for size, limit in resources.flask_limits.items():
+        row = [f"Flasks {size.value}"]
+        for wk in weeks:
+            max_used = max(resources.flask_pool[wk + timedelta(days=i)][size] for i in range(7))
+            row.append(f"{max_used}/{limit}")
         tbl.add_row(row)
 
-    # Data rows
+    # d) Pattern slots: max in use during week vs available
+    header_pattern = ["Pattern"]
+    for wk in weeks:
+        max_used = max(resources.pattern_slots.get(wk + timedelta(days=i), 0) for i in range(7))
+        total_limit = resources.max_patterns_per_day
+        header_pattern.append(f"{max_used}/{total_limit}")
+    tbl.add_row(header_pattern)
+
+    # Data rows for orders (from plan, for display only)
     for oid in full_plan:
-        disp = f"\033[93m{oid}\033[0m" if oid in delayed else oid
+        # Get strategy from the order object
+        order_obj = next(o for o in orders if o.order_id == oid)
+        strategy = order_obj.strategy.name if hasattr(order_obj.strategy, "name") else str(order_obj.strategy)
+        disp = f"{oid} ({strategy})"
+        if oid in delayed:
+            disp = f"\033[93m{disp}\033[0m"
         row = [disp]
         for wk in weeks:
             cnt = order_weekly[oid].get(wk, 0)
@@ -122,7 +120,7 @@ def print_weekly_report(full_plan: dict, orders: list, pouring_limit_per_day: fl
     print("\nWEEKLY PRODUCTION REPORT\n")
     print(tbl)
     print("\nLegend: 'P'=pattern, '●'=sample end, '+'=end production, '▲'=due date")
-    print("Format: molds per week. Top rows show usage vs limit.\n")
+    print("Format: metal/molds show total used in week vs total weekly limit. Flasks/patterns show max used in any day of week vs available limit.\n")
 
 
 def print_schedule_summary(full_plan: dict, orders: list):
@@ -153,3 +151,127 @@ def print_schedule_summary(full_plan: dict, orders: list):
         print(f"🔴 Unscheduled: {unscheduled}")
     else:
         print("🔴 Unscheduled: []")
+
+def print_weekly_resource_usage_report(resources):
+    from prettytable import PrettyTable
+    from datetime import timedelta
+
+    # Build week buckets
+    all_dates = set(resources.flask_pool.keys())
+    if not all_dates:
+        print("No scheduling data found.")
+        return
+
+    start = min(all_dates)
+    end = max(all_dates)
+    w = start - timedelta(days=start.weekday())
+    weeks = []
+    while w <= end:
+        weeks.append(w)
+        w += timedelta(weeks=1)
+
+    labels = [wk.strftime("%b-%d") for wk in weeks]
+    tbl = PrettyTable()
+    tbl.field_names = ["Resource"] + labels
+
+    # Metal (pouring)
+    header_metal = ["Metal Used"]
+    for wk in weeks:
+        bd = sum(1 for i in range(7) if (wk + timedelta(days=i)).weekday() < 5)
+        max_used = max(resources.daily_pouring.get(wk + timedelta(days=i), 0) for i in range(7))
+        header_metal.append(f"{max_used:.1f}/{resources.max_pouring_tons_per_day}")
+    tbl.add_row(header_metal)
+
+    # Molds
+    header_molds = ["Molds Used"]
+    for wk in weeks:
+        bd = sum(1 for i in range(7) if (wk + timedelta(days=i)).weekday() < 5)
+        max_used = max(resources.daily_molds.get(wk + timedelta(days=i), 0) for i in range(7))
+        header_molds.append(f"{max_used}/{resources.max_molds_per_day}")
+    tbl.add_row(header_molds)
+
+    # Flasks (per size)
+    for size, limit in resources.flask_limits.items():
+        row = [f"Flasks {size.value}"]
+        for wk in weeks:
+            max_used = max(resources.flask_pool[wk + timedelta(days=i)][size] for i in range(7))
+            row.append(f"{max_used}/{limit}")
+        tbl.add_row(row)
+
+    print("\nWEEKLY RESOURCE USAGE REPORT\n")
+    print(tbl)
+    print("\nFormat: max used per day in week / daily limit.\n")
+
+def print_daily_resource_usage_report(full_plan: dict, orders: list, resources, start_date, end_date):
+    from prettytable import PrettyTable
+    from datetime import timedelta
+
+    # Genera la lista de días en el rango
+    days = []
+    current = start_date
+    while current <= end_date:
+        days.append(current)
+        current += timedelta(days=1)
+
+    labels = [d.strftime("%Y-%m-%d") for d in days]
+    tbl = PrettyTable()
+    tbl.field_names = ["Recurso / Orden"] + labels
+
+    # Metal (pouring)
+    row_metal = ["Metal"]
+    for d in days:
+        used = resources.daily_pouring.get(d, 0)
+        row_metal.append(f"{int(used)}/{resources.max_pouring_tons_per_day}")
+    tbl.add_row(row_metal)
+
+    # Molds
+    row_molds = ["Molds"]
+    for d in days:
+        used = resources.daily_molds.get(d, 0)
+        row_molds.append(f"{used}/{resources.max_molds_per_day}")
+    tbl.add_row(row_molds)
+
+    # Flasks (por tamaño)
+    for size, limit in resources.flask_limits.items():
+        row = [f"Flasks {size.value}"]
+        for d in days:
+            used = resources.flask_pool[d][size]
+            row.append(f"{used}/{limit}")
+        tbl.add_row(row)
+
+    # Pattern slots
+    row_pattern = ["Pattern"]
+    for d in days:
+        used = resources.pattern_slots.get(d, 0)
+        row_pattern.append(f"{used}/{resources.max_patterns_per_day}")
+    tbl.add_row(row_pattern)
+
+    # Información de órdenes por día y por etapa (sin staging)
+    stage_names = {
+        "pattern": "Pattern",
+        "molding": "Molding",
+        "pouring": "Pouring",
+        "shakeout": "Shakeout",
+        "sample_end": "Sample End"
+    }
+
+    for oid, plan in full_plan.items():
+        order_obj = next((o for o in orders if o.order_id == oid), None)
+        strategy = order_obj.strategy.name if hasattr(order_obj.strategy, "name") else str(order_obj.strategy) if order_obj else ""
+        disp = f"{oid} ({strategy})"
+        # Para cada etapa relevante, agrega una fila (sin staging)
+        for phase in ["pattern", "molding", "pouring", "shakeout", "sample_end"]:
+            row = [f"{disp} {stage_names.get(phase, phase)}"]
+            day_map = defaultdict(str)
+            for dstr, cnt in plan["schedule"].get(phase, []):
+                d = datetime.strptime(dstr, "%Y-%m-%d").date()
+                if start_date <= d <= end_date:
+                    day_map[d] = str(cnt)
+            for d in days:
+                row.append(day_map.get(d, ""))
+            tbl.add_row(row)
+
+    # Print
+    print("\nDAILY RESOURCE USAGE REPORT\n")
+    print(tbl)
+    print("\nCada orden muestra una fila por etapa: Pattern, Molding, Pouring, Shakeout, End Sample.\n")
