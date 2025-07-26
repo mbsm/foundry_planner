@@ -63,6 +63,7 @@ class Order:
         self.total_molds = 0
         self.produced_molds = 0
         self.scraped_molds = 0
+        self.product_family = ''
 
     def compute_estimated_duration(self, max_molds_per_day):
         total_molds = ceil(self.parts_total / self.parts_per_mold)
@@ -82,7 +83,10 @@ def parse_orders(file_path):
         order.parts_total = raw["quantity"]
         order.parts_per_mold = raw["parts_per_mold"]
         order.part_weight_ton = raw["part_weight"]
+        order.part_number = raw["part_number"]
+        order.order_type = OrderType(raw["order_type"])
         order.flask_size = FlaskSize(raw["flask_size"])
+        order.product_family = raw["product_family"]
 
         # Safe due_date parsing
         due_raw = raw["due_date"]

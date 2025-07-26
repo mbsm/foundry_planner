@@ -87,6 +87,17 @@ def print_weekly_report(full_plan: dict, orders: list, resources):
         header_pattern.append(f"{max_used}/{total_limit}")
     tbl.add_row(header_pattern)
 
+    # Weekly production mix for each product family
+    for family, max_mix in resources.product_family_max_mix.items():
+        row = [f"Mix {family}"]
+        for wk in weeks:
+            business_days = sum(1 for i in range(7) if (wk + timedelta(days=i)).weekday() < 5)
+            weekly_used = sum(resources.product_family_usage[wk + timedelta(days=i)].get(family, 0) for i in range(7))
+            weekly_max = resources.max_molds_per_day * business_days
+            percent = (weekly_used / weekly_max) if weekly_max > 0 else 0
+            row.append(f"{int(percent*100)}%/{int(max_mix*100)}%")
+        tbl.add_row(row)
+
     # Data rows for orders (from plan, for display only)
     for oid in full_plan:
         # Get strategy from the order object
@@ -275,3 +286,272 @@ def print_daily_resource_usage_report(full_plan: dict, orders: list, resources, 
     print("\nDAILY RESOURCE USAGE REPORT\n")
     print(tbl)
     print("\nCada orden muestra una fila por etapa: Pattern, Molding, Pouring, Shakeout, End Sample.\n")
+
+def get_weekly_report_data(full_plan: dict, orders: list, resources):
+    # Step 1: Build week buckets from ResourceManager usage
+    all_dates = set(resources.flask_pool.keys())
+    if not all_dates:
+        return {"columns": [], "rows": []}
+
+    start = min(all_dates)
+    end = max(all_dates)
+    w = start - timedelta(days=start.weekday())
+    weeks = []
+    while w <= end:
+        weeks.append(w)
+        w += timedelta(weeks=1)
+
+    # Step 2: Aggregate order info for display only
+    order_due = {o.order_id: o.due_date for o in orders}
+    delayed = {o.order_id for o in orders if full_plan[o.order_id]["status"] == "DELAYED"}
+    pattern_weeks = defaultdict(set)
+    sample_end_week = {}
+    finish_week = {}
+    due_week = {}
+    order_weekly = defaultdict(lambda: defaultdict(int))
+
+    for oid, plan in full_plan.items():
+        for phase in ("pattern", "molding"):
+            for dstr, cnt in plan["schedule"].get(phase, []):
+                d = datetime.strptime(dstr, "%Y-%m-%d").date()
+                wk = max(w for w in weeks if w <= d)
+                if phase == "pattern":
+                    pattern_weeks[oid].add(wk)
+                else:
+                    order_weekly[oid][wk] += cnt
+
+        for dstr, _ in plan["schedule"].get("sample_end", []):
+            d = datetime.strptime(dstr, "%Y-%m-%d").date()
+            sample_end_week[oid] = max(w for w in weeks if w <= d)
+
+        if plan["end_date"]:
+            d = datetime.strptime(plan["end_date"], "%Y-%m-%d").date()
+            finish_week[oid] = max(w for w in weeks if w <= d)
+
+        dd = order_due.get(oid)
+        if dd:
+            due_week[oid] = max(w for w in weeks if w <= dd)
+
+    # Step 3: Table setup
+    labels = [wk.strftime("%b-%d") for wk in weeks]
+    columns = ["Order ID"] + labels
+    rows = []
+
+    # a) Metal: total consumed in week vs total available
+    header_metal = ["Metal"]
+    for wk in weeks:
+        total_used = sum(resources.daily_pouring.get(wk + timedelta(days=i), 0) for i in range(7))
+        business_days = sum(1 for i in range(7) if (wk + timedelta(days=i)).weekday() < 5)
+        total_limit = resources.max_pouring_tons_per_day * business_days
+        header_metal.append(f"{total_used:.1f}/{total_limit:.1f}")
+    rows.append(header_metal)
+
+    # b) Molds: total produced in week vs total capacity
+    header_molds = ["Molds"]
+    for wk in weeks:
+        total_used = sum(resources.daily_molds.get(wk + timedelta(days=i), 0) for i in range(7))
+        business_days = sum(1 for i in range(7) if (wk + timedelta(days=i)).weekday() < 5)
+        total_limit = resources.max_molds_per_day * business_days
+        header_molds.append(f"{total_used}/{total_limit}")
+    rows.append(header_molds)
+
+    # c) Flasks: max in use during week vs available (per size)
+    for size, limit in resources.flask_limits.items():
+        row = [f"Flasks {size.value}"]
+        for wk in weeks:
+            max_used = max(resources.flask_pool[wk + timedelta(days=i)][size] for i in range(7))
+            row.append(f"{max_used}/{limit}")
+        rows.append(row)
+
+    # d) Pattern slots: max in use during week vs available
+    header_pattern = ["Pattern"]
+    for wk in weeks:
+        max_used = max(resources.pattern_slots.get(wk + timedelta(days=i), 0) for i in range(7))
+        total_limit = resources.max_patterns_per_day
+        header_pattern.append(f"{max_used}/{total_limit}")
+    rows.append(header_pattern)
+
+    # Weekly production mix for each product family
+    for family, max_mix in resources.product_family_max_mix.items():
+        row = [f"Mix {family}"]
+        for wk in weeks:
+            business_days = sum(1 for i in range(7) if (wk + timedelta(days=i)).weekday() < 5)
+            weekly_used = sum(resources.product_family_usage[wk + timedelta(days=i)].get(family, 0) for i in range(7))
+            weekly_max = resources.max_molds_per_day * business_days
+            percent = (weekly_used / weekly_max) if weekly_max > 0 else 0
+            row.append(f"{int(percent*100)}%/{int(max_mix*100)}%")
+        rows.append(row)
+
+    # Data rows for orders (from plan, for display only)
+    for oid in full_plan:
+        order_obj = next(o for o in orders if o.order_id == oid)
+        strategy = order_obj.strategy.name if hasattr(order_obj.strategy, "name") else str(order_obj.strategy)
+        disp = f"{oid} ({strategy})"
+        row = [disp]
+        for wk in weeks:
+            cnt = order_weekly[oid].get(wk, 0)
+            syms = ""
+            if wk in pattern_weeks[oid]:
+                syms += "P"
+            if sample_end_week.get(oid) == wk:
+                syms += "●"
+            if finish_week.get(oid) == wk:
+                syms += "+"
+            if due_week.get(oid) == wk:
+                syms += "▲"
+            if cnt > 0:
+                cell = f"{cnt}{syms}"
+            elif syms:
+                cell = syms
+            else:
+                cell = ""
+            row.append(cell)
+        rows.append(row)
+
+    # Retorna la estructura para la tabla
+    return {
+        "columns": columns,
+        "rows": rows,
+        "legend": "P=pattern, ●=sample end, +=end production, ▲=due date"
+    }
+
+def get_weekly_resource_usage_data(resources):
+    from datetime import timedelta
+    all_dates = set(resources.flask_pool.keys())
+    if not all_dates:
+        return {"columns": [], "rows": []}
+
+    start = min(all_dates)
+    end = max(all_dates)
+    w = start - timedelta(days=start.weekday())
+    weeks = []
+    while w <= end:
+        weeks.append(w)
+        w += timedelta(weeks=1)
+
+    labels = [wk.strftime("%b-%d") for wk in weeks]
+    columns = ["Recurso"] + labels
+    rows = []
+
+    # Metal
+    header_metal = ["Metal"]
+    for wk in weeks:
+        total_used = sum(resources.daily_pouring.get(wk + timedelta(days=i), 0) for i in range(7))
+        business_days = sum(1 for i in range(7) if (wk + timedelta(days=i)).weekday() < 5)
+        total_limit = resources.max_pouring_tons_per_day * business_days
+        header_metal.append(f"{total_used:.1f}/{total_limit:.1f}")
+    rows.append(header_metal)
+
+    # Molds
+    header_molds = ["Molds"]
+    for wk in weeks:
+        total_used = sum(resources.daily_molds.get(wk + timedelta(days=i), 0) for i in range(7))
+        business_days = sum(1 for i in range(7) if (wk + timedelta(days=i)).weekday() < 5)
+        total_limit = resources.max_molds_per_day * business_days
+        header_molds.append(f"{total_used}/{total_limit}")
+    rows.append(header_molds)
+
+    # Flasks por tamaño
+    for size, limit in resources.flask_limits.items():
+        row = [f"Flasks {size.value}"]
+        for wk in weeks:
+            max_used = max(resources.flask_pool[wk + timedelta(days=i)][size] for i in range(7))
+            row.append(f"{max_used}/{limit}")
+        rows.append(row)
+
+    # Patterns
+    header_pattern = ["Pattern"]
+    for wk in weeks:
+        max_used = max(resources.pattern_slots.get(wk + timedelta(days=i), 0) for i in range(7))
+        total_limit = resources.max_patterns_per_day
+        header_pattern.append(f"{max_used}/{total_limit}")
+    rows.append(header_pattern)
+
+    # Mix por familia con restricción
+    for family, max_mix in resources.product_family_max_mix.items():
+        row = [f"Mix {family}"]
+        for wk in weeks:
+            business_days = sum(1 for i in range(7) if (wk + timedelta(days=i)).weekday() < 5)
+            weekly_used = sum(resources.product_family_usage[wk + timedelta(days=i)].get(family, 0) for i in range(7))
+            weekly_max = resources.max_molds_per_day * business_days
+            percent = (weekly_used / weekly_max) if weekly_max > 0 else 0
+            row.append(f"{int(percent*100)}%/{int(max_mix*100)}%")
+        rows.append(row)
+
+    return {"columns": columns, "rows": rows}
+
+def get_weekly_orders_summary_data(full_plan, orders, resources):
+    # Copia la lógica de la tabla de órdenes semanal (solo las filas de órdenes)
+    from datetime import datetime, timedelta
+    all_dates = set(resources.flask_pool.keys())
+    if not all_dates:
+        return {"columns": [], "rows": []}
+
+    start = min(all_dates)
+    end = max(all_dates)
+    w = start - timedelta(days=start.weekday())
+    weeks = []
+    while w <= end:
+        weeks.append(w)
+        w += timedelta(weeks=1)
+
+    labels = [wk.strftime("%b-%d") for wk in weeks]
+    columns = ["Order ID"] + labels
+    rows = []
+
+    # --- Procesa las filas de órdenes ---
+    pattern_weeks = defaultdict(set)
+    sample_end_week = {}
+    finish_week = {}
+    due_week = {}
+    order_weekly = defaultdict(lambda: defaultdict(int))
+    order_due = {o.order_id: o.due_date for o in orders}
+
+    for oid, plan in full_plan.items():
+        for phase in ("pattern", "molding"):
+            for dstr, cnt in plan["schedule"].get(phase, []):
+                d = datetime.strptime(dstr, "%Y-%m-%d").date()
+                wk = max(w for w in weeks if w <= d)
+                if phase == "pattern":
+                    pattern_weeks[oid].add(wk)
+                else:
+                    order_weekly[oid][wk] += cnt
+
+        for dstr, _ in plan["schedule"].get("sample_end", []):
+            d = datetime.strptime(dstr, "%Y-%m-%d").date()
+            sample_end_week[oid] = max(w for w in weeks if w <= d)
+
+        if plan["end_date"]:
+            d = datetime.strptime(plan["end_date"], "%Y-%m-%d").date()
+            finish_week[oid] = max(w for w in weeks if w <= d)
+
+        dd = order_due.get(oid)
+        if dd:
+            due_week[oid] = max(w for w in weeks if w <= dd)
+
+    for oid in full_plan:
+        order_obj = next(o for o in orders if o.order_id == oid)
+        strategy = order_obj.strategy.name if hasattr(order_obj.strategy, "name") else str(order_obj.strategy)
+        disp = f"{oid} ({strategy})"
+        row = [disp]
+        for wk in weeks:
+            cnt = order_weekly[oid].get(wk, 0)
+            syms = ""
+            if wk in pattern_weeks[oid]:
+                syms += "P"
+            if sample_end_week.get(oid) == wk:
+                syms += "●"
+            if finish_week.get(oid) == wk:
+                syms += "+"
+            if due_week.get(oid) == wk:
+                syms += "▲"
+            if cnt > 0:
+                cell = f"{cnt}{syms}"
+            elif syms:
+                cell = syms
+            else:
+                cell = ""
+            row.append(cell)
+        rows.append(row)
+
+    return {"columns": columns, "rows": rows}

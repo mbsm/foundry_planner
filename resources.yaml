@@ -9,3 +9,6 @@ max_same_part_molds_per_day: 5
 max_pouring_tons_per_day: 120.0
 max_staging_molds: 80
 
+product_family_max_mix:
+  'Parrilla' : 15%
+

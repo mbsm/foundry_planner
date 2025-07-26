@@ -172,27 +172,28 @@ def try_schedule(order, start_date, calendar, resources):
         
         flask_release_day = shakeout_day
 
-        # Calcula el periodo de ocupación del flask
+        # Calculate the days needed for flasks
         flask_days = []
         d = mold_day
         while d <= flask_release_day:
             flask_days.append(d)
             d = calendar.add_calendar_days(d, 1)
 
-        # Calcula el mínimo disponible considerando el pool temporal
-        min_available = float('inf')
+        # Calculate the minimum available considering the temp pool
+        max_molds_flasks = float('inf')
         for d in flask_days:
             used = resources.flask_pool[d][order.flask_size] + temp_flask_pool[d][order.flask_size]
             available = resources.flask_limits[order.flask_size] - used
-            min_available = min(min_available, available)
+            max_molds_flasks = min(max_molds_flasks, available)
 
         max_molds_today = resources.compute_available_molds(order, mold_day, pouring_day)
         max_molds_pouring = resources.compute_available_pouring(order, pouring_day)
-        available_today = min(max_molds_today, max_molds_pouring, min_available, molds_remaining)
+        max_molds_mix = resources.compute_available_mix(order, mold_day)
+        available_today = min(max_molds_today, max_molds_pouring, max_molds_mix, max_molds_flasks, molds_remaining)
 
         logging.info(
             f"{order.order_id}: Day {mold_day} - "
-            f"molds_today={max_molds_today}, pouring={max_molds_pouring}, flasks={min_available}, "
+            f"molds_today={max_molds_today}, pouring={max_molds_pouring}, flasks={max_molds_flasks}, "
             f"remaining={molds_remaining}, available={available_today}"
         )
 
@@ -276,7 +277,8 @@ def firm_schedule(order, start_date, calendar, resources, plan):
                 resources.reserve_molds(mold_day, qty)
                 resources.reserve_same_part(mold_day, order.order_id, qty)
                 resources.reserve_flask(mold_day, flask_release_day, order.flask_size, qty)
-                
+                resources.reserve_mix(mold_day, order.product_family, qty)
+
                 schedule[phase].append((mold_day, qty))
         elif phase != "molding":
              for entry in items:

@@ -61,15 +61,15 @@ def main():
         elif plan["status"] == OrderStatus.UNSCHEDULED:
             unscheduled.append(order.order_id)
 
-        print_daily_resource_usage_report(full_plan, orders, resources, start_date, end_date)
-
-        input("Press Enter to continue...")
 
 
-
-    #print_schedule_summary(full_plan, orders)
-
+    print_schedule_summary(full_plan, orders)
     print_weekly_report(full_plan, orders, resources)
+
+    # save full plan to JSON
+    with open("full_plan.json", "w") as f:
+        json.dump(full_plan, f, indent=4, default=str)
+        logging.info("Full plan saved to full_plan.json")
 
 
 if __name__ == "__main__":

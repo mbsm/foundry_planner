@@ -13,7 +13,7 @@
   finishing_time:
     nominal: 35
     minimum: 16
-  strategy: ASAP
+  strategy: JIT
 
 - order_id: Job-2
   part_number: PN-002
@@ -29,7 +29,7 @@
   finishing_time:
     nominal: 35
     minimum: 16
-  strategy: ASAP
+  strategy: JIT
 
 - order_id: Job-3
   part_number: PN-003
@@ -45,7 +45,7 @@
   finishing_time:
     nominal: 35
     minimum: 16
-  strategy: ASAP
+  strategy: JIT
 
 - order_id: Job-4
   part_number: PN-002
@@ -61,11 +61,11 @@
   finishing_time:
     nominal: 35
     minimum: 16
-  strategy: ASAP
+  strategy: JIT
 
 - order_id: Job-5
   part_number: PN-005
-  product_family: Parrilla
+  product_family: Lifter
   quantity: 24
   part_weight: 1.1
   parts_per_mold: 1
@@ -77,6 +77,6 @@
   finishing_time:
     nominal: 35
     minimum: 16
-  strategy: ASAP
+  strategy: JIT
   pattern_time: 20
   molds_to_sample: 5
