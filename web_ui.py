@@ -31,15 +31,62 @@ APP_STATE = {
 # --- Funciones de Lógica ---
 
 def load_orders_from_file(filename="orders.yaml"):
-    """Carga las órdenes y actualiza el estado y la UI."""
     try:
         APP_STATE["orders"] = parse_orders(filename)
         ui.notify(f"Órdenes cargadas correctamente desde {filename}", color="positive")
-        # Actualiza la tabla en la UI
-        orders_table.rows = [order.__dict__ for order in APP_STATE["orders"]]
+        # Actualiza la tabla en el panel de órdenes
+        rows = []
+        for order in APP_STATE["orders"]:
+            row_data = {
+                'order_type': getattr(order, 'order_type', ''),
+                'order_id': getattr(order, 'order_id', ''),
+                'part_number': getattr(order, 'part_number', ''),
+                'product_family': getattr(order, 'product_family', ''),
+                'quantity': getattr(order, 'parts_total', getattr(order, 'quantity', '')),
+                'due_date': getattr(order, 'due_date', ''),
+            }
+            rows.append(row_data)
+        orders_table.rows = rows
         orders_table.update()
     except Exception as e:
         ui.notify(f"Error al cargar órdenes: {e}", color="negative")
+
+def handle_orders_upload(e: UploadEventArguments):
+    """Guarda el archivo de órdenes subido en una ubicación temporal y lo procesa."""
+    temp_filepath = None
+    try:
+        # Crea un archivo temporal para guardar el contenido subido
+        with tempfile.NamedTemporaryFile(delete=False, suffix='.yaml', mode='w', encoding='utf-8') as tmp:
+            content = e.content.read().decode('utf-8')
+            tmp.write(content)
+            temp_filepath = tmp.name
+        
+        # Carga las órdenes desde el archivo temporal
+        APP_STATE["orders"] = parse_orders(temp_filepath)
+        ui.notify(f"Órdenes cargadas desde '{e.name}'", color="positive")
+        
+        # Prepara los datos para la tabla, convirtiendo Enums a strings
+        rows = []
+        for order in APP_STATE["orders"]:
+            row_data = {
+                'order_type': getattr(order, 'order_type', ''),
+                'order_id': getattr(order, 'order_id', ''),
+                'part_number': getattr(order, 'part_number', ''),
+                'product_family': getattr(order, 'product_family', ''),
+                'quantity': getattr(order, 'parts_total', getattr(order, 'quantity', '')),
+                'due_date': getattr(order, 'due_date', ''),
+            }
+            rows.append(row_data)
+        
+        orders_table.rows = rows
+        orders_table.update()
+
+    except Exception as ex:
+        ui.notify(f"Error al cargar el archivo de órdenes: {ex}", color="negative")
+    finally:
+        # Limpia el archivo temporal después de usarlo
+        if temp_filepath and os.path.exists(temp_filepath):
+            os.remove(temp_filepath)
 
 def load_resources_from_file(filename="resources.yaml"):
     """Carga la configuración de recursos y actualiza el estado y la UI."""
@@ -53,6 +100,26 @@ def load_resources_from_file(filename="resources.yaml"):
         update_resources_ui_from_state()
     except Exception as e:
         ui.notify(f"Error al cargar recursos: {e}", color="negative")
+
+def handle_resources_upload(e: UploadEventArguments):
+    """Guarda el archivo de recursos subido en una ubicación temporal y lo procesa."""
+    temp_filepath = None
+    try:
+        # Crea un archivo temporal para guardar el contenido subido
+        with tempfile.NamedTemporaryFile(delete=False, suffix='.yaml', mode='w', encoding='utf-8') as tmp:
+            content = e.content.read().decode('utf-8')
+            tmp.write(content)
+            temp_filepath = tmp.name
+        
+        # Carga los recursos desde el archivo temporal
+        load_resources_from_file(temp_filepath)
+
+    except Exception as ex:
+        ui.notify(f"Error al cargar recursos: {ex}", color="negative")
+    finally:
+        # Limpia el archivo temporal después de usarlo
+        if temp_filepath and os.path.exists(temp_filepath):
+            os.remove(temp_filepath)
 
 def save_resources_to_file():
     """Guarda la configuración de recursos de la UI al archivo."""
@@ -79,6 +146,33 @@ def load_holidays_from_file():
         holidays_list.update()
     except Exception as e:
         ui.notify(f"Error al cargar feriados: {e}", color="negative")
+
+def handle_holidays_upload(e: UploadEventArguments):
+    """Guarda el archivo de feriados subido en una ubicación temporal y lo procesa."""
+    temp_filepath = None
+    try:
+        # Crea un archivo temporal para guardar el contenido subido
+        with tempfile.NamedTemporaryFile(delete=False, suffix='.yaml', mode='w', encoding='utf-8') as tmp:
+            content = e.content.read().decode('utf-8')
+            tmp.write(content)
+            temp_filepath = tmp.name
+        
+        # Carga los feriados desde el archivo temporal
+        APP_STATE["calendar_manager"] = CalendarManager(temp_filepath)
+        APP_STATE["holidays"] = APP_STATE["calendar_manager"].holidays
+        ui.notify(f"Feriados cargados desde '{e.name}'", color="positive")
+        # Actualiza la lista en la UI
+        holidays_list.clear()
+        with holidays_list:
+            for holiday in sorted(list(APP_STATE["holidays"])):
+                ui.label(holiday.isoformat())
+        holidays_list.update()
+    except Exception as ex:
+        ui.notify(f"Error al cargar feriados: {ex}", color="negative")
+    finally:
+        # Limpia el archivo temporal después de usarlo
+        if temp_filepath and os.path.exists(temp_filepath):
+            os.remove(temp_filepath)
 
 def run_planner():
     """Ejecuta el planificador con la configuración y datos actuales."""
@@ -119,10 +213,7 @@ def run_planner():
         APP_STATE["full_plan"] = full_plan
         ui.notify("Planificación completada.", color="positive")
         
-        # 4. Actualiza la UI
-        report_data = get_weekly_report_data(APP_STATE["full_plan"], orders_to_plan, APP_STATE["resource_manager"])
-
-        # Crea la tabla NiceGUI usando report_data
+        # Actualiza las dos tablas del planificador
         resource_data = get_weekly_resource_usage_data(APP_STATE["resource_manager"])
         resource_table.columns = [{"name": col, "label": col, "field": col} for col in resource_data["columns"]]
         resource_table.rows = [
@@ -132,12 +223,12 @@ def run_planner():
         resource_table.update()
 
         orders_data = get_weekly_orders_summary_data(APP_STATE["full_plan"], orders_to_plan, APP_STATE["resource_manager"])
-        orders_table.columns = [{"name": col, "label": col, "field": col} for col in orders_data["columns"]]
-        orders_table.rows = [
+        planner_orders_table.columns = [{"name": col, "label": col, "field": col} for col in orders_data["columns"]]
+        planner_orders_table.rows = [
             {orders_data["columns"][i]: cell for i, cell in enumerate(row)}
             for row in orders_data["rows"]
         ]
-        orders_table.update()
+        planner_orders_table.update()
 
     except Exception as e:
         ui.notify(f"Error durante la planificación: {e}", color="negative")
@@ -154,44 +245,6 @@ with ui.tabs().classes('w-full') as tabs:
     holidays_tab = ui.tab('Calendario')
     planner_tab = ui.tab('Plan')
 
-def handle_orders_upload(e: UploadEventArguments):
-            """Guarda el archivo de órdenes subido en una ubicación temporal y lo procesa."""
-            temp_filepath = None
-            try:
-                # Crea un archivo temporal para guardar el contenido subido
-                with tempfile.NamedTemporaryFile(delete=False, suffix='.yaml', mode='w', encoding='utf-8') as tmp:
-                    content = e.content.read().decode('utf-8')
-                    tmp.write(content)
-                    temp_filepath = tmp.name
-                
-                # Carga las órdenes desde el archivo temporal
-                APP_STATE["orders"] = parse_orders(temp_filepath)
-                ui.notify(f"Órdenes cargadas desde '{e.name}'", color="positive")
-                
-                # Prepara los datos para la tabla, convirtiendo Enums a strings
-                rows = []
-                for order in APP_STATE["orders"]:
-                    row_data = {
-                                    'order_type': getattr(order, 'order_type', ''),
-                                    'order_id': getattr(order, 'order_id', ''),
-                                    'part_number': getattr(order, 'part_number', ''),
-                                    'product_family': getattr(order, 'product_family', ''),
-                                    'quantity': getattr(order, 'parts_total', ''),
-                                    'due_date': getattr(order, 'due_date', ''),
-                                }
-                    rows.append(row_data)
-                
-                orders_table.rows = rows
-                orders_table.update()
-
-            except Exception as ex:
-                ui.notify(f"Error al cargar el archivo de órdenes: {ex}", color="negative")
-            finally:
-                # Limpia el archivo temporal después de usarlo
-                if temp_filepath and os.path.exists(temp_filepath):
-                    os.remove(temp_filepath)
-
-
 with ui.tab_panels(tabs, value=orders_tab).classes('w-full'):
     # Panel de Órdenes
     with ui.tab_panel(orders_tab):
@@ -207,15 +260,15 @@ with ui.tab_panels(tabs, value=orders_tab).classes('w-full'):
             ],
             rows=[],
             row_key='order_id'
-        ).classes('w-full')
+        ).classes('w-full dense')
 
     # Panel de Configuracion
     with ui.tab_panel(resources_tab):
         ui.label('Configuración').classes('text-h5')
+        ui.upload(label='Seleccionar archivo de recursos', on_upload=handle_resources_upload, auto_upload=True).props('accept=.yaml,.yml')
         with ui.row():
             ui.button('Cargar desde resources.yaml', on_click=load_resources_from_file)
             ui.button('Guardar en resources.yaml', on_click=save_resources_to_file)
-
         with ui.grid(columns=2):
             # Los inputs se crearán dinámicamente
             resources_container = ui.element('div')
@@ -242,6 +295,7 @@ with ui.tab_panels(tabs, value=orders_tab).classes('w-full'):
     # Calendario de Feriados
     with ui.tab_panel(holidays_tab):
         ui.label('Calendario').classes('text-h5')
+        ui.upload(label='Seleccionar archivo de feriados', on_upload=handle_holidays_upload, auto_upload=True).props('accept=.yaml,.yml')
         ui.button('Cargar Feriados desde holidays.yaml', on_click=load_holidays_from_file)
         holidays_list = ui.column()
 
@@ -252,9 +306,16 @@ with ui.tab_panels(tabs, value=orders_tab).classes('w-full'):
         ui.label('Uso de Recursos por Semana').classes('text-h6 mt-4')
         resource_table = ui.table(columns=[], rows=[]).classes('w-full dense')
         ui.label('Resumen Semanal de Órdenes').classes('text-h6 mt-4')
-        orders_table = ui.table(columns=[], rows=[]).classes('w-full dense')
+        planner_orders_table = ui.table(columns=[], rows=[]).classes('w-full dense')
 
 # Carga inicial al arrancar la app
 load_resources_from_file()
+
+ui.add_css("""
+.q-table th, .q-table td {
+    padding: 4px 8px !important;
+    font-size: 13px !important;
+}
+""")
 
 ui.run()
